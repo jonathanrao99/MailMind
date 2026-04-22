@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "MailMind MVP",
+  "version": "1.6.0",
+  "description": "AI draft replies inside Gmail",
+  "permissions": ["storage"],
+  "commands": {
+    "mailmind-ai-draft": {
+      "suggested_key": { "default": "Ctrl+Shift+Period", "mac": "Command+Shift+Period" },
+      "description": "Generate AI draft in Gmail (compose or reply must be open)"
+    }
+  },
+  "action": {
+    "default_title": "MailMind settings",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "https://mail.google.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ]
+}
