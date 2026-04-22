@@ -1,7 +1,6 @@
 const API_BASE = "http://127.0.0.1:8000";
 const FETCH_TIMEOUT_MS = 10_000;
 const DRAFT_ANCHOR = "data-mailmind-ai-draft";
-const ANCHOR_THREAD = "thread";
 const ANCHOR_COMPOSE = "compose";
 const COMPOSE_FAB_ID = "mailmind-compose-fab";
 const PERSONA_KEY = "mailmindPersona";
@@ -200,15 +199,6 @@ function setComposeText(el, text) {
   el.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function findReplyButtonInMain(main) {
-  for (const b of main.querySelectorAll('div[role="button"]')) {
-    const al = (b.getAttribute("aria-label") || "").toLowerCase();
-    if (al === "reply" || al === "reply all" || (al.startsWith("reply") && al.length < 32))
-      return b;
-  }
-  return null;
-}
-
 /* --- Injected premium UI (toasts, dialog, fab) --- */
 
 function ensureInjectedStyles() {
@@ -319,12 +309,6 @@ function ensureInjectedStyles() {
     .mm-welcome kbd { font: 11px ui-monospace, monospace; background: rgba(0,0,0,0.35); padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.12); }
     .mm-welcome-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
     .mm-welcome-btn { font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 8px; background: #3b82f6; color: #fff; border: none; cursor: pointer; }
-
-    .mm-thread-btn { border: none; cursor: pointer; border-radius: 999px; font-family: system-ui, -apple-system, Roboto, sans-serif;
-      font-size: 13px; font-weight: 600; padding: 8px 16px; color: #0d1117;
-      background: linear-gradient(180deg, #fafbfc 0%, #e8ebef 100%);
-      box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.08); }
-    .mm-thread-btn:disabled { opacity: 0.5; }
   `;
   (document.documentElement || document.body).appendChild(s);
 }
@@ -403,40 +387,6 @@ function injectWelcomeTooltip(fab, btn) {
       }, 12000);
     }
   });
-}
-
-function injectThreadButton() {
-  const main = getMain();
-  if (!main) return;
-  if (main.querySelector(`[${DRAFT_ANCHOR}="${ANCHOR_THREAD}"]`)) return;
-
-  ensureInjectedStyles();
-  const wrap = document.createElement("div");
-  wrap.setAttribute(DRAFT_ANCHOR, ANCHOR_THREAD);
-  Object.assign(wrap.style, {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    margin: "8px 0",
-    padding: "0 4px",
-  });
-
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "mm-thread-btn";
-  btn.setAttribute("aria-label", "Open AI draft options to generate a reply with MailMind");
-  btn.textContent = DEFAULT_BTN;
-  wrap.appendChild(btn);
-  const reply = findReplyButtonInMain(main);
-  if (reply && reply.parentNode) {
-    reply.parentNode.insertBefore(wrap, reply);
-  } else {
-    const h2 = main.querySelector("h2");
-    if (h2 && h2.parentNode) h2.parentNode.insertBefore(wrap, h2.nextSibling);
-    else main.insertBefore(wrap, main.firstChild);
-  }
-
-  btn.addEventListener("click", () => onDraftClick(btn));
 }
 
 function injectComposeFab() {
@@ -610,7 +560,7 @@ function showIntentDialog() {
 
 function resetAllDraftButtons() {
   const sel = document.querySelectorAll(
-    `.mm-thread-btn, #${COMPOSE_FAB_ID} .mm-fab-btn, [${DRAFT_ANCHOR}="compose"] .mm-fab-btn`
+    `#${COMPOSE_FAB_ID} .mm-fab-btn, [${DRAFT_ANCHOR}="compose"] .mm-fab-btn`
   );
   sel.forEach((b) => {
     b.disabled = false;
@@ -626,7 +576,7 @@ function resetAllDraftButtons() {
 
 function setMainButtonsLoading(loading) {
   document
-    .querySelectorAll(`.mm-thread-btn, #${COMPOSE_FAB_ID} .mm-fab-btn`)
+    .querySelectorAll(`#${COMPOSE_FAB_ID} .mm-fab-btn`)
     .forEach((b) => {
       b.disabled = loading;
       if (b.classList.contains("mm-fab-btn")) {
@@ -770,7 +720,10 @@ function onDraftClick(btn) {
 
 const tryInject = debounce(() => {
   try {
-    injectThreadButton();
+    /* Legacy: top-of-thread "AI Draft" was removed; strip if still in DOM. */
+    document
+      .querySelectorAll(`[${DRAFT_ANCHOR}="thread"]`)
+      .forEach((n) => n.remove());
     injectComposeFab();
   } catch (e) {
     /* ignore; Gmail DOM in flux */
