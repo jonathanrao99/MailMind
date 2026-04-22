@@ -95,9 +95,25 @@ You should be able to hit the server from the machine; the extension is configur
 
 ---
 
+## Contributing
+
+We like **small, focused** changes: one concern per pull request, clear commit messages, and a short description of *what* you changed and *why*.
+
+1. **Fork** the repo and create a branch from `main` (e.g. `fix/gmail-fab-zindex` or `feat/length-preset`).
+2. **Run the stack locally** before you open a PR: backend on `http://127.0.0.1:8000` and the extension loaded unpacked from `extension/`, then sanity-check in Gmail.
+3. **Match existing style** in the files you touch (JS for the content script, Python for the API) instead of reformatting unrelated code.
+4. **Don’t commit secrets** (`.env`, API keys, tokens). The repo’s `.gitignore` should help; when in doubt, use env examples only.
+5. **Open a PR** with a concise summary. If you’re fixing a bug, say how to reproduce it. If the change is UI-only, a before/after note or screenshot helps.
+
+Security-sensitive stuff (e.g. prompt injection, data handling) belongs in a private disclosure if you’re not sure—use your judgment.
+
+You don’t need permission to open an issue: questions, ideas, and rough edges are all welcome.
+
+---
+
 ## License
 
-This is a project skeleton / MVP: add a license that fits your plans when you publish for real.
+This project is released under the **MIT License** — see [`LICENSE`](LICENSE) for the full text.
 
 ---
 
