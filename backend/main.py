@@ -39,7 +39,7 @@ OUTLOOK_TOKEN_PATH = DATA_DIR / "outlook_oauth_tokens.json"
 OUTLOOK_INGEST_PATH = DATA_DIR / "outlook_ingest_latest.json"
 TELEMETRY_PATH = DATA_DIR / "telemetry_events.jsonl"
 FRONTEND_DIR = _root / "apps" / "landing"
-FRONTEND_DIST_DIR = FRONTEND_DIR / "dist"
+FRONTEND_DIST_DIR = FRONTEND_DIR / "out"
 _oauth_states: dict[str, datetime] = {}
 
 app = FastAPI(title="MailMind MVP")
@@ -49,18 +49,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-if (FRONTEND_DIST_DIR / "assets").exists():
-    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST_DIR / "assets")), name="assets")
+_next_dir = FRONTEND_DIST_DIR / "_next"
+if _next_dir.is_dir():
+    app.mount("/_next", StaticFiles(directory=str(_next_dir)), name="next_static")
 
 
 def _frontend_index_path() -> Path:
-    dist_index = FRONTEND_DIST_DIR / "index.html"
-    if dist_index.exists():
-        return dist_index
-    legacy_index = FRONTEND_DIR / "index.html"
-    if legacy_index.exists():
-        return legacy_index
-    raise HTTPException(status_code=404, detail="Frontend not found")
+    out_index = FRONTEND_DIST_DIR / "index.html"
+    if out_index.exists():
+        return out_index
+    raise HTTPException(status_code=404, detail="Frontend not found. Run: cd apps/landing && npm run build")
 
 
 class Persona(BaseModel):
@@ -815,6 +813,14 @@ async def frontend_index() -> FileResponse:
     return FileResponse(_frontend_index_path())
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon_ico() -> FileResponse:
+    path = FRONTEND_DIST_DIR / "favicon.ico"
+    if path.exists():
+        return FileResponse(path)
+    raise HTTPException(status_code=404, detail="favicon not found")
+
+
 @app.get("/app")
 async def frontend_app_legacy() -> RedirectResponse:
     return RedirectResponse(url="/", status_code=301)
@@ -822,18 +828,18 @@ async def frontend_app_legacy() -> RedirectResponse:
 
 @app.get("/robots.txt")
 async def frontend_robots() -> FileResponse:
-    path = FRONTEND_DIR / "robots.txt"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="robots.txt not found")
-    return FileResponse(path, media_type="text/plain")
+    for candidate in (FRONTEND_DIST_DIR / "robots.txt", FRONTEND_DIR / "public" / "robots.txt"):
+        if candidate.exists():
+            return FileResponse(candidate, media_type="text/plain")
+    raise HTTPException(status_code=404, detail="robots.txt not found")
 
 
 @app.get("/sitemap.xml")
 async def frontend_sitemap() -> FileResponse:
-    path = FRONTEND_DIR / "sitemap.xml"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="sitemap.xml not found")
-    return FileResponse(path, media_type="application/xml")
+    for candidate in (FRONTEND_DIST_DIR / "sitemap.xml", FRONTEND_DIR / "public" / "sitemap.xml"):
+        if candidate.exists():
+            return FileResponse(candidate, media_type="application/xml")
+    raise HTTPException(status_code=404, detail="sitemap.xml not found")
 
 
 @app.get("/gmail/oauth/start", response_model=GmailOAuthStartResponse)

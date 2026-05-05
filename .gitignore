@@ -7,7 +7,8 @@ backend/data/*.jsonl
 .DS_Store
 
 apps/landing/node_modules/
-apps/landing/dist/
+apps/landing/.next/
+apps/landing/out/
 apps/mail/node_modules/
 apps/mail/dist/
 desktop/node_modules/

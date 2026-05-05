@@ -1,0 +1,12 @@
+{
+  "name": "mailos",
+  "private": true,
+  "description": "Root convenience scripts. Apps live in apps/landing, apps/mail, and desktop/.",
+  "scripts": {
+    "dev": "npm run dev:landing",
+    "dev:landing": "npm run dev --prefix apps/landing",
+    "dev:desktop": "npm run dev --prefix desktop",
+    "build:landing": "npm run build --prefix apps/landing",
+    "build:mail": "npm run build --prefix apps/mail"
+  }
+}

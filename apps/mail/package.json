@@ -4,7 +4,7 @@
   "version": "0.2.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node -e \"console.error('\\n  Mail UI is Electron-only (not a web app).\\n  From repo root: make desktop\\n  Build dist only: npm run build\\n'); process.exit(1)\"",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },

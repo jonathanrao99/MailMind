@@ -6,20 +6,10 @@ Run from repo root:
 make desktop
 ```
 
-This installs desktop dependencies (first run), builds the mail UI (`apps/mail`), starts the backend if it is not already up, and opens MailMind in an Electron window (loading the built mail app from disk).
+This installs desktop dependencies (first run), builds the mail UI (`apps/mail` → `dist/`), starts the backend if `http://127.0.0.1:8000/health` is not already up, and opens Electron. The window always loads `apps/mail/dist/index.html` from disk (no dev URL).
 
-## Mail UI development
-
-To iterate on the mail app with Vite hot reload, run in one terminal:
+To rebuild the mail bundle only:
 
 ```bash
-cd apps/mail && npm install && npm run dev
+cd desktop && npm run build:mail
 ```
-
-In another terminal, from `desktop/`:
-
-```bash
-npm run dev:mail
-```
-
-`MAILMIND_MAIL_DEV=1` loads `http://127.0.0.1:5174` instead of `apps/mail/dist/index.html`. Ensure the API is running (`make up` or let Electron spawn `./scripts/dev-start.sh`).

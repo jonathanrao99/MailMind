@@ -6,8 +6,6 @@ const path = require("path");
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BACKEND_HEALTH_URL = "http://127.0.0.1:8000/health";
 const MAIL_DIST_INDEX = path.join(ROOT_DIR, "apps/mail/dist/index.html");
-const USE_MAIL_DEV = process.env.MAILMIND_MAIL_DEV === "1";
-const MAIL_DEV_URL = process.env.MAILMIND_MAIL_DEV_URL || "http://127.0.0.1:5174";
 
 let backendProc = null;
 
@@ -62,7 +60,7 @@ function createWindow() {
     minHeight: 700,
     title: "MailMind",
     autoHideMenuBar: true,
-    backgroundColor: "#f5f5f3",
+    backgroundColor: "#ffffff",
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
@@ -72,11 +70,7 @@ function createWindow() {
     shell.openExternal(url);
     return { action: "deny" };
   });
-  if (USE_MAIL_DEV) {
-    win.loadURL(MAIL_DEV_URL);
-  } else {
-    win.loadFile(MAIL_DIST_INDEX);
-  }
+  win.loadFile(MAIL_DIST_INDEX);
 }
 
 app.whenReady().then(async () => {

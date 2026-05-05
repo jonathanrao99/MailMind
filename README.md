@@ -37,6 +37,14 @@ If you’ve ever thought *“I’ll reply in five minutes”* and then it was ne
 
 ## Quick start
 
+**Frontend-only (from repo root, no root `node_modules` required):**
+
+```bash
+npm run dev              # marketing landing (Next.js dev server, usually :3000)
+npm run dev:landing      # same as above explicitly
+npm run dev:desktop      # Electron (mail UI is not a separate web app)
+```
+
 One command from repo root:
 
 ```bash
@@ -95,9 +103,9 @@ You should be able to hit the server from the machine; the extension is configur
 
 | Path | Job |
 |------|-----|
-| `apps/landing/` | Vite + React + TypeScript **marketing** site only; production build is what FastAPI serves at `/`. |
+| `apps/landing/` | **Next.js 16** (App Router) + TypeScript + Tailwind marketing site; `next build` static export to `out/` is what FastAPI serves at `/`. |
 | `apps/mail/` | Vite + React + TypeScript **desktop inbox** UI; built with `base: './'` for Electron `loadFile`. |
-| `desktop/main.js` | Electron shell: loads `apps/mail/dist/index.html` (or `MAILMIND_MAIL_DEV=1` + Vite on port 5174). |
+| `desktop/main.js` | Electron shell: loads `apps/mail/dist/index.html` only. |
 | `backend/main.py` | FastAPI app with `/health`, `/generate`, Gmail/Outlook OAuth + ingest, CORS for `https://mail.google.com`, OpenRouter + persona/intent prompt logic. Serves landing static assets and redirects `GET /app` → `/`. |
 | `extension/manifest.json` | MV3, service worker, content script on mail.google.com, optional command for the shortcut. |
 | `extension/content.js` | Gmail DOM, FAB, toasts, intent dialog, `fetch` to the backend. |
