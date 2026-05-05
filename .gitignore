@@ -1,1 +1,13 @@
 .env
+backend/.env
+backend/.venv/
+backend/__pycache__/
+backend/data/*.jsonl
+*.pyc
+.DS_Store
+
+apps/landing/node_modules/
+apps/landing/dist/
+apps/mail/node_modules/
+apps/mail/dist/
+desktop/node_modules/

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MailMind MVP",
-  "version": "1.6.3",
+  "version": "1.6.6",
   "description": "AI draft replies inside Gmail",
   "permissions": ["storage"],
   "commands": {

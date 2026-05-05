@@ -1,12 +1,19 @@
 import os
 import re
+import json
+import base64
+import secrets
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # MailOS/.env then backend/.env (if present)
@@ -17,6 +24,23 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = "arcee-ai/trinity-large-preview:free"
 HTTP_TIMEOUT = 10.0
+GOOGLE_OAUTH_BASE = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
+GMAIL_SCOPES = ["openid", "email", "profile", "https://www.googleapis.com/auth/gmail.readonly"]
+MICROSOFT_OAUTH_BASE = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+MICROSOFT_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+GRAPH_API_BASE = "https://graph.microsoft.com/v1.0/me"
+OUTLOOK_SCOPES = ["openid", "email", "profile", "offline_access", "User.Read", "Mail.Read"]
+DATA_DIR = Path(__file__).resolve().parent / "data"
+TOKEN_PATH = DATA_DIR / "gmail_oauth_tokens.json"
+INGEST_PATH = DATA_DIR / "gmail_ingest_latest.json"
+OUTLOOK_TOKEN_PATH = DATA_DIR / "outlook_oauth_tokens.json"
+OUTLOOK_INGEST_PATH = DATA_DIR / "outlook_ingest_latest.json"
+TELEMETRY_PATH = DATA_DIR / "telemetry_events.jsonl"
+FRONTEND_DIR = _root / "apps" / "landing"
+FRONTEND_DIST_DIR = FRONTEND_DIR / "dist"
+_oauth_states: dict[str, datetime] = {}
 
 app = FastAPI(title="MailMind MVP")
 app.add_middleware(
@@ -25,6 +49,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+if (FRONTEND_DIST_DIR / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST_DIR / "assets")), name="assets")
+
+
+def _frontend_index_path() -> Path:
+    dist_index = FRONTEND_DIST_DIR / "index.html"
+    if dist_index.exists():
+        return dist_index
+    legacy_index = FRONTEND_DIR / "index.html"
+    if legacy_index.exists():
+        return legacy_index
+    raise HTTPException(status_code=404, detail="Frontend not found")
 
 
 class Persona(BaseModel):
@@ -49,6 +85,97 @@ class GenerateRequest(BaseModel):
 
 class GenerateResponse(BaseModel):
     reply: str
+
+
+class SummaryRequest(BaseModel):
+    email: str
+    subject: str | None = None
+    fromAddress: str | None = None
+
+
+class SummaryResponse(BaseModel):
+    summary: str
+    nextAction: str
+    priority: str
+
+
+class GmailOAuthStartResponse(BaseModel):
+    authUrl: str
+    state: str
+
+
+class GmailOAuthStatusResponse(BaseModel):
+    connected: bool
+    email: str | None = None
+    scope: str | None = None
+    expiresAt: str | None = None
+    hasRefreshToken: bool = False
+
+
+class GmailOAuthCallbackResponse(BaseModel):
+    connected: bool
+    email: str | None = None
+
+
+class GmailIngestRequest(BaseModel):
+    maxResults: int = 20
+    query: str | None = None
+
+
+class IngestedMessage(BaseModel):
+    id: str
+    threadId: str
+    internalDate: str | None = None
+    fromAddress: str | None = None
+    subject: str | None = None
+    snippet: str | None = None
+    body: str | None = None
+    priority: str | None = None
+    nextAction: str | None = None
+    summary: str | None = None
+
+
+class GmailIngestResponse(BaseModel):
+    count: int
+    messages: list[IngestedMessage]
+
+
+class OutlookOAuthStartResponse(BaseModel):
+    authUrl: str
+    state: str
+
+
+class OutlookOAuthStatusResponse(BaseModel):
+    connected: bool
+    email: str | None = None
+    scope: str | None = None
+    expiresAt: str | None = None
+    hasRefreshToken: bool = False
+
+
+class OutlookOAuthCallbackResponse(BaseModel):
+    connected: bool
+    email: str | None = None
+
+
+class OutlookIngestRequest(BaseModel):
+    maxResults: int = 20
+    query: str | None = None
+
+
+class OutlookIngestResponse(BaseModel):
+    count: int
+    messages: list[IngestedMessage]
+
+
+class TelemetryEventRequest(BaseModel):
+    event: str
+    properties: dict[str, Any] | None = None
+    occurredAt: str | None = None
+
+
+class TelemetryIngestResponse(BaseModel):
+    accepted: bool
 
 
 INTENT_HINTS: dict[str, str] = {
@@ -77,6 +204,16 @@ LENGTH_HINTS: dict[str, str] = {
 }
 
 
+SUMMARY_NEXT_ACTIONS = {"Respond today", "Schedule follow-up", "Draft response", "No action needed"}
+SUMMARY_PRIORITIES = {"important", "follow up", "needs reply", "fyi"}
+PRIORITY_TO_ACTION = {
+    "important": "Respond today",
+    "follow up": "Schedule follow-up",
+    "needs reply": "Draft response",
+    "fyi": "No action needed",
+}
+
+
 def _omit_contact_line(persona: Persona | None, intent: str | None) -> bool:
     """Omit contact from the sign-off when this reply is a decline and instructions say to skip phone/number."""
     if not persona or not str((persona.contactInfo or "")).strip():
@@ -96,6 +233,253 @@ def _omit_contact_line(persona: Persona | None, intent: str | None) -> bool:
     ):
         return False
     return True
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _ensure_data_dir() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    _ensure_data_dir()
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    _ensure_data_dir()
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, separators=(",", ":")) + "\n")
+
+
+def _oauth_redirect_uri() -> str:
+    return os.environ.get("GOOGLE_OAUTH_REDIRECT_URI", "http://127.0.0.1:8000/gmail/oauth/callback").strip()
+
+
+def _google_client_id() -> str:
+    cid = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+    if not cid:
+        raise HTTPException(status_code=500, detail="GOOGLE_CLIENT_ID is not configured")
+    return cid
+
+
+def _google_client_secret() -> str:
+    sec = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+    if not sec:
+        raise HTTPException(status_code=500, detail="GOOGLE_CLIENT_SECRET is not configured")
+    return sec
+
+
+def _microsoft_client_id() -> str:
+    cid = os.environ.get("MICROSOFT_CLIENT_ID", "").strip()
+    if not cid:
+        raise HTTPException(status_code=500, detail="MICROSOFT_CLIENT_ID is not configured")
+    return cid
+
+
+def _microsoft_client_secret() -> str:
+    sec = os.environ.get("MICROSOFT_CLIENT_SECRET", "").strip()
+    if not sec:
+        raise HTTPException(status_code=500, detail="MICROSOFT_CLIENT_SECRET is not configured")
+    return sec
+
+
+def _outlook_oauth_redirect_uri() -> str:
+    return os.environ.get(
+        "MICROSOFT_OAUTH_REDIRECT_URI",
+        "http://127.0.0.1:8000/outlook/oauth/callback",
+    ).strip()
+
+
+def _prune_expired_states() -> None:
+    now = _utc_now()
+    expired = [k for k, v in _oauth_states.items() if v < now]
+    for k in expired:
+        del _oauth_states[k]
+
+
+def _decode_b64url(value: str) -> str:
+    padded = value + "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
+
+
+def _extract_email_from_id_token(id_token: str | None) -> str | None:
+    if not id_token:
+        return None
+    parts = id_token.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        payload = json.loads(_decode_b64url(parts[1]))
+        email = (payload.get("email") or "").strip()
+        return email or None
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+
+async def _google_post_token(payload: dict[str, Any]) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        try:
+            r = await client.post(
+                GOOGLE_TOKEN_URL,
+                data=payload,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail="Google token exchange request failed") from e
+    if r.is_success:
+        return r.json()
+    detail = "Google token exchange failed"
+    try:
+        err = r.json().get("error") or ""
+        err_desc = r.json().get("error_description") or ""
+        parts = [x.strip() for x in (err, err_desc) if str(x).strip()]
+        if parts:
+            detail = "Google token exchange failed: " + " - ".join(parts)
+    except (ValueError, AttributeError):
+        pass
+    raise HTTPException(status_code=502, detail=detail)
+
+
+async def _microsoft_post_token(payload: dict[str, Any]) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        try:
+            r = await client.post(
+                MICROSOFT_TOKEN_URL,
+                data=payload,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail="Microsoft token exchange request failed") from e
+    if r.is_success:
+        return r.json()
+    detail = "Microsoft token exchange failed"
+    try:
+        err = r.json().get("error") or ""
+        err_desc = r.json().get("error_description") or ""
+        parts = [x.strip() for x in (err, err_desc) if str(x).strip()]
+        if parts:
+            detail = "Microsoft token exchange failed: " + " - ".join(parts)
+    except (ValueError, AttributeError):
+        pass
+    raise HTTPException(status_code=502, detail=detail)
+
+
+def _token_expiry_iso(expires_in_seconds: int | None) -> str | None:
+    if not expires_in_seconds:
+        return None
+    expires = _utc_now() + timedelta(seconds=int(expires_in_seconds))
+    return expires.isoformat()
+
+
+def _token_is_expiring_soon(token_payload: dict[str, Any]) -> bool:
+    expires_at = (token_payload.get("expires_at") or "").strip()
+    if not expires_at:
+        return True
+    try:
+        dt = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return True
+    return dt <= (_utc_now() + timedelta(seconds=60))
+
+
+async def _refresh_access_token(tokens: dict[str, Any]) -> dict[str, Any]:
+    refresh_token = (tokens.get("refresh_token") or "").strip()
+    if not refresh_token:
+        raise HTTPException(status_code=401, detail="No refresh token available; reconnect Gmail OAuth")
+    data = await _google_post_token(
+        {
+            "client_id": _google_client_id(),
+            "client_secret": _google_client_secret(),
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        }
+    )
+    refreshed = dict(tokens)
+    refreshed["access_token"] = data.get("access_token")
+    refreshed["expires_in"] = data.get("expires_in")
+    refreshed["scope"] = data.get("scope", refreshed.get("scope"))
+    refreshed["token_type"] = data.get("token_type", refreshed.get("token_type"))
+    refreshed["expires_at"] = _token_expiry_iso(data.get("expires_in"))
+    _write_json(TOKEN_PATH, refreshed)
+    return refreshed
+
+
+async def _get_gmail_tokens() -> dict[str, Any]:
+    tokens = _load_json(TOKEN_PATH)
+    if not tokens or not tokens.get("access_token"):
+        raise HTTPException(status_code=401, detail="Gmail is not connected")
+    if _token_is_expiring_soon(tokens):
+        tokens = await _refresh_access_token(tokens)
+    return tokens
+
+
+async def _refresh_outlook_access_token(tokens: dict[str, Any]) -> dict[str, Any]:
+    refresh_token = (tokens.get("refresh_token") or "").strip()
+    if not refresh_token:
+        raise HTTPException(status_code=401, detail="No refresh token available; reconnect Outlook OAuth")
+    data = await _microsoft_post_token(
+        {
+            "client_id": _microsoft_client_id(),
+            "client_secret": _microsoft_client_secret(),
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "scope": " ".join(OUTLOOK_SCOPES),
+        }
+    )
+    refreshed = dict(tokens)
+    refreshed["access_token"] = data.get("access_token")
+    refreshed["refresh_token"] = data.get("refresh_token", refreshed.get("refresh_token"))
+    refreshed["expires_in"] = data.get("expires_in")
+    refreshed["scope"] = data.get("scope", refreshed.get("scope"))
+    refreshed["token_type"] = data.get("token_type", refreshed.get("token_type"))
+    refreshed["expires_at"] = _token_expiry_iso(data.get("expires_in"))
+    _write_json(OUTLOOK_TOKEN_PATH, refreshed)
+    return refreshed
+
+
+async def _get_outlook_tokens() -> dict[str, Any]:
+    tokens = _load_json(OUTLOOK_TOKEN_PATH)
+    if not tokens or not tokens.get("access_token"):
+        raise HTTPException(status_code=401, detail="Outlook is not connected")
+    if _token_is_expiring_soon(tokens):
+        tokens = await _refresh_outlook_access_token(tokens)
+    return tokens
+
+
+def _find_header(headers: list[dict[str, str]], key: str) -> str | None:
+    for h in headers:
+        if h.get("name", "").lower() == key.lower():
+            return h.get("value")
+    return None
+
+
+def _extract_plain_body(payload: dict[str, Any]) -> str | None:
+    body = payload.get("body") or {}
+    data = body.get("data")
+    if payload.get("mimeType", "").lower().startswith("text/plain") and data:
+        try:
+            return _decode_b64url(data)
+        except ValueError:
+            return None
+    for part in payload.get("parts") or []:
+        text = _extract_plain_body(part)
+        if text:
+            return text
+    return None
 
 
 def build_prompt(
@@ -337,6 +721,57 @@ def normalize_reply(
     return t.strip()
 
 
+def heuristic_summary(subject: str | None, email_body: str, from_address: str | None = None) -> SummaryResponse:
+    text = " ".join([
+        (subject or "").strip(),
+        (from_address or "").strip(),
+        (email_body or "").strip(),
+    ]).lower()
+
+    if any(k in text for k in ("invoice", "security", "urgent", "asap", "deadline")):
+        priority = "important"
+        next_action = "Respond today"
+    elif any(k in text for k in ("follow up", "checking in", "check in", "reminder")):
+        priority = "follow up"
+        next_action = "Schedule follow-up"
+    elif any(k in text for k in ("thanks", "fyi", "for your information", "no reply needed")):
+        priority = "fyi"
+        next_action = "No action needed"
+    else:
+        priority = "needs reply"
+        next_action = "Draft response"
+
+    clean = re.sub(r"\s+", " ", (email_body or "").strip())
+    if not clean:
+        summary = "No email content available to summarize."
+    else:
+        summary = clean[:220] + ("..." if len(clean) > 220 else "")
+    return SummaryResponse(summary=summary, nextAction=next_action, priority=priority)
+
+
+def _normalize_priority(raw: str | None) -> str | None:
+    v = str(raw or "").strip().lower()
+    if not v:
+        return None
+    aliases = {
+        "important": "important",
+        "high": "important",
+        "high priority": "important",
+        "critical": "important",
+        "follow up": "follow up",
+        "follow-up": "follow up",
+        "followup": "follow up",
+        "needs reply": "needs reply",
+        "needs_response": "needs reply",
+        "needs response": "needs reply",
+        "reply": "needs reply",
+        "fyi": "fyi",
+        "for your information": "fyi",
+        "no action needed": "fyi",
+    }
+    return aliases.get(v)
+
+
 async def call_openrouter(user_message: str) -> str:
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:
@@ -370,6 +805,298 @@ async def call_openrouter(user_message: str) -> str:
     raise HTTPException(status_code=500, detail="OpenRouter request failed")
 
 
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/")
+async def frontend_index() -> FileResponse:
+    return FileResponse(_frontend_index_path())
+
+
+@app.get("/app")
+async def frontend_app_legacy() -> RedirectResponse:
+    return RedirectResponse(url="/", status_code=301)
+
+
+@app.get("/robots.txt")
+async def frontend_robots() -> FileResponse:
+    path = FRONTEND_DIR / "robots.txt"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="robots.txt not found")
+    return FileResponse(path, media_type="text/plain")
+
+
+@app.get("/sitemap.xml")
+async def frontend_sitemap() -> FileResponse:
+    path = FRONTEND_DIR / "sitemap.xml"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="sitemap.xml not found")
+    return FileResponse(path, media_type="application/xml")
+
+
+@app.get("/gmail/oauth/start", response_model=GmailOAuthStartResponse)
+async def gmail_oauth_start() -> GmailOAuthStartResponse:
+    _prune_expired_states()
+    state = secrets.token_urlsafe(24)
+    _oauth_states[state] = _utc_now() + timedelta(minutes=10)
+    params = {
+        "client_id": _google_client_id(),
+        "redirect_uri": _oauth_redirect_uri(),
+        "response_type": "code",
+        "scope": " ".join(GMAIL_SCOPES),
+        "access_type": "offline",
+        "include_granted_scopes": "true",
+        "prompt": "consent",
+        "state": state,
+    }
+    return GmailOAuthStartResponse(authUrl=f"{GOOGLE_OAUTH_BASE}?{urlencode(params)}", state=state)
+
+
+@app.get("/gmail/oauth/callback", response_model=GmailOAuthCallbackResponse)
+async def gmail_oauth_callback(code: str, state: str) -> GmailOAuthCallbackResponse:
+    _prune_expired_states()
+    if state not in _oauth_states:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+    del _oauth_states[state]
+    data = await _google_post_token(
+        {
+            "client_id": _google_client_id(),
+            "client_secret": _google_client_secret(),
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": _oauth_redirect_uri(),
+        }
+    )
+    email = _extract_email_from_id_token(data.get("id_token"))
+    tokens = {
+        "access_token": data.get("access_token"),
+        "refresh_token": data.get("refresh_token"),
+        "scope": data.get("scope"),
+        "token_type": data.get("token_type"),
+        "expires_in": data.get("expires_in"),
+        "expires_at": _token_expiry_iso(data.get("expires_in")),
+        "email": email,
+        "updated_at": _utc_now().isoformat(),
+    }
+    _write_json(TOKEN_PATH, tokens)
+    return GmailOAuthCallbackResponse(connected=True, email=email)
+
+
+@app.get("/gmail/oauth/status", response_model=GmailOAuthStatusResponse)
+async def gmail_oauth_status() -> GmailOAuthStatusResponse:
+    tokens = _load_json(TOKEN_PATH)
+    if not tokens.get("access_token"):
+        return GmailOAuthStatusResponse(connected=False)
+    return GmailOAuthStatusResponse(
+        connected=True,
+        email=tokens.get("email"),
+        scope=tokens.get("scope"),
+        expiresAt=tokens.get("expires_at"),
+        hasRefreshToken=bool((tokens.get("refresh_token") or "").strip()),
+    )
+
+
+@app.post("/gmail/ingest/messages", response_model=GmailIngestResponse)
+async def gmail_ingest_messages(body: GmailIngestRequest) -> GmailIngestResponse:
+    max_results = max(1, min(100, int(body.maxResults)))
+    tokens = await _get_gmail_tokens()
+    params = {"maxResults": max_results}
+    if body.query and body.query.strip():
+        params["q"] = body.query.strip()
+
+    async def _list_messages(token: str) -> httpx.Response:
+        headers = {"Authorization": f"Bearer {token}"}
+        return await client.get(f"{GMAIL_API_BASE}/messages", headers=headers, params=params)
+
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        access_token = str(tokens.get("access_token") or "")
+        list_resp = await _list_messages(access_token)
+        if list_resp.status_code == 401 and str(tokens.get("refresh_token") or "").strip():
+            tokens = await _refresh_access_token(tokens)
+            access_token = str(tokens.get("access_token") or "")
+            list_resp = await _list_messages(access_token)
+        if not list_resp.is_success:
+            raise HTTPException(status_code=500, detail="Failed to fetch Gmail message list")
+        ids = (list_resp.json().get("messages") or [])
+        messages: list[IngestedMessage] = []
+        headers = {"Authorization": f"Bearer {access_token}"}
+        for item in ids:
+            message_id = item.get("id")
+            thread_id = item.get("threadId")
+            if not message_id or not thread_id:
+                continue
+            detail_resp = await client.get(
+                f"{GMAIL_API_BASE}/messages/{message_id}",
+                headers=headers,
+                params={"format": "full"},
+            )
+            if not detail_resp.is_success:
+                continue
+            raw = detail_resp.json()
+            payload = raw.get("payload") or {}
+            headers_list = payload.get("headers") or []
+            ingested = IngestedMessage(
+                id=message_id,
+                threadId=thread_id,
+                internalDate=raw.get("internalDate"),
+                fromAddress=_find_header(headers_list, "From"),
+                subject=_find_header(headers_list, "Subject"),
+                snippet=raw.get("snippet"),
+                body=_extract_plain_body(payload),
+            )
+            triage = heuristic_summary(ingested.subject, ingested.body or ingested.snippet or "", ingested.fromAddress)
+            ingested.priority = triage.priority
+            ingested.nextAction = triage.nextAction
+            ingested.summary = triage.summary
+            messages.append(ingested)
+    _write_json(
+        INGEST_PATH,
+        {
+            "updated_at": _utc_now().isoformat(),
+            "count": len(messages),
+            "messages": [m.model_dump() for m in messages],
+        },
+    )
+    return GmailIngestResponse(count=len(messages), messages=messages)
+
+
+@app.get("/outlook/oauth/start", response_model=OutlookOAuthStartResponse)
+async def outlook_oauth_start() -> OutlookOAuthStartResponse:
+    _prune_expired_states()
+    state = secrets.token_urlsafe(24)
+    _oauth_states[state] = _utc_now() + timedelta(minutes=10)
+    params = {
+        "client_id": _microsoft_client_id(),
+        "redirect_uri": _outlook_oauth_redirect_uri(),
+        "response_type": "code",
+        "scope": " ".join(OUTLOOK_SCOPES),
+        "response_mode": "query",
+        "state": state,
+        "prompt": "select_account",
+    }
+    return OutlookOAuthStartResponse(authUrl=f"{MICROSOFT_OAUTH_BASE}?{urlencode(params)}", state=state)
+
+
+@app.get("/outlook/oauth/callback", response_model=OutlookOAuthCallbackResponse)
+async def outlook_oauth_callback(code: str, state: str) -> OutlookOAuthCallbackResponse:
+    _prune_expired_states()
+    if state not in _oauth_states:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+    del _oauth_states[state]
+    data = await _microsoft_post_token(
+        {
+            "client_id": _microsoft_client_id(),
+            "client_secret": _microsoft_client_secret(),
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": _outlook_oauth_redirect_uri(),
+            "scope": " ".join(OUTLOOK_SCOPES),
+        }
+    )
+    email = _extract_email_from_id_token(data.get("id_token"))
+    tokens = {
+        "access_token": data.get("access_token"),
+        "refresh_token": data.get("refresh_token"),
+        "scope": data.get("scope"),
+        "token_type": data.get("token_type"),
+        "expires_in": data.get("expires_in"),
+        "expires_at": _token_expiry_iso(data.get("expires_in")),
+        "email": email,
+        "updated_at": _utc_now().isoformat(),
+    }
+    _write_json(OUTLOOK_TOKEN_PATH, tokens)
+    return OutlookOAuthCallbackResponse(connected=True, email=email)
+
+
+@app.get("/outlook/oauth/status", response_model=OutlookOAuthStatusResponse)
+async def outlook_oauth_status() -> OutlookOAuthStatusResponse:
+    tokens = _load_json(OUTLOOK_TOKEN_PATH)
+    if not tokens.get("access_token"):
+        return OutlookOAuthStatusResponse(connected=False)
+    return OutlookOAuthStatusResponse(
+        connected=True,
+        email=tokens.get("email"),
+        scope=tokens.get("scope"),
+        expiresAt=tokens.get("expires_at"),
+        hasRefreshToken=bool((tokens.get("refresh_token") or "").strip()),
+    )
+
+
+@app.post("/outlook/ingest/messages", response_model=OutlookIngestResponse)
+async def outlook_ingest_messages(body: OutlookIngestRequest) -> OutlookIngestResponse:
+    max_results = max(1, min(100, int(body.maxResults)))
+    tokens = await _get_outlook_tokens()
+    params: dict[str, Any] = {
+        "$top": max_results,
+        "$select": "id,conversationId,receivedDateTime,from,subject,bodyPreview",
+    }
+    headers = {"Authorization": f"Bearer {str(tokens.get('access_token') or '')}"}
+    if body.query and body.query.strip():
+        params["$search"] = f"\"{body.query.strip()}\""
+        headers["ConsistencyLevel"] = "eventual"
+
+    async def _list_messages(token: str) -> httpx.Response:
+        h = dict(headers)
+        h["Authorization"] = f"Bearer {token}"
+        return await client.get(f"{GRAPH_API_BASE}/messages", headers=h, params=params)
+
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        access_token = str(tokens.get("access_token") or "")
+        list_resp = await _list_messages(access_token)
+        if list_resp.status_code == 401 and str(tokens.get("refresh_token") or "").strip():
+            tokens = await _refresh_outlook_access_token(tokens)
+            access_token = str(tokens.get("access_token") or "")
+            list_resp = await _list_messages(access_token)
+        if not list_resp.is_success:
+            raise HTTPException(status_code=500, detail="Failed to fetch Outlook message list")
+
+        values = list_resp.json().get("value") or []
+        messages: list[IngestedMessage] = []
+        detail_headers = {"Authorization": f"Bearer {access_token}"}
+        for item in values:
+            message_id = item.get("id")
+            thread_id = item.get("conversationId") or message_id
+            if not message_id or not thread_id:
+                continue
+            detail_resp = await client.get(
+                f"{GRAPH_API_BASE}/messages/{message_id}",
+                headers=detail_headers,
+                params={"$select": "body"},
+            )
+            body_value = None
+            if detail_resp.is_success:
+                body_value = (((detail_resp.json().get("body") or {}).get("content")) or "").strip() or None
+
+            from_obj = item.get("from") or {}
+            from_email = ((from_obj.get("emailAddress") or {}).get("address")) or None
+            ingested = IngestedMessage(
+                id=message_id,
+                threadId=thread_id,
+                internalDate=item.get("receivedDateTime"),
+                fromAddress=from_email,
+                subject=item.get("subject"),
+                snippet=item.get("bodyPreview"),
+                body=body_value,
+            )
+            triage = heuristic_summary(ingested.subject, ingested.body or ingested.snippet or "", ingested.fromAddress)
+            ingested.priority = triage.priority
+            ingested.nextAction = triage.nextAction
+            ingested.summary = triage.summary
+            messages.append(ingested)
+
+    _write_json(
+        OUTLOOK_INGEST_PATH,
+        {
+            "updated_at": _utc_now().isoformat(),
+            "count": len(messages),
+            "messages": [m.model_dump() for m in messages],
+        },
+    )
+    return OutlookIngestResponse(count=len(messages), messages=messages)
+
+
 @app.post("/generate", response_model=GenerateResponse)
 async def generate(body: GenerateRequest) -> GenerateResponse:
     if not body.email or not body.email.strip():
@@ -390,3 +1117,94 @@ async def generate(body: GenerateRequest) -> GenerateResponse:
     except httpx.HTTPError as e:  # pragma: no cover
         raise HTTPException(status_code=500, detail="Request to model failed") from e
     return GenerateResponse(reply=reply)
+
+
+@app.post("/summarize", response_model=SummaryResponse)
+async def summarize(body: SummaryRequest) -> SummaryResponse:
+    if not body.email or not body.email.strip():
+        raise HTTPException(status_code=400, detail="email must not be empty")
+
+    fallback = heuristic_summary(body.subject, body.email, body.fromAddress)
+    try:
+        raw = await call_openrouter(
+            "Summarize this email for inbox triage in 1-2 concise sentences. "
+            "Also provide exactly one next action chosen from: Respond today, Schedule follow-up, Draft response, No action needed. "
+            "Return STRICT JSON with keys summary and nextAction only.\n\n"
+            f"Subject: {(body.subject or '').strip()}\n"
+            f"From: {(body.fromAddress or '').strip()}\n"
+            f"Email:\n{body.email.strip()}"
+        )
+        parsed = json.loads(raw)
+        summary = str(parsed.get("summary") or "").strip()
+        next_action = str(parsed.get("nextAction") or "").strip()
+        normalized_priority = _normalize_priority(parsed.get("priority"))
+        if not summary:
+            return fallback
+        if next_action not in SUMMARY_NEXT_ACTIONS:
+            if normalized_priority:
+                next_action = PRIORITY_TO_ACTION[normalized_priority]
+            else:
+                next_action = fallback.nextAction
+        priority = {
+            "Respond today": "important",
+            "Schedule follow-up": "follow up",
+            "Draft response": "needs reply",
+            "No action needed": "fyi",
+        }[next_action]
+        return SummaryResponse(summary=summary[:280], nextAction=next_action, priority=priority)
+    except (json.JSONDecodeError, TypeError, ValueError, KeyError):
+        return fallback
+    except HTTPException:
+        return fallback
+    except httpx.HTTPError:
+        return fallback
+
+
+@app.post("/telemetry/events", response_model=TelemetryIngestResponse)
+async def telemetry_events(body: TelemetryEventRequest) -> TelemetryIngestResponse:
+    allowed_events = {
+        "draft_invoked",
+        "draft_generated_success",
+        "draft_generated_error",
+        "time_to_first_draft_ms",
+        "persona_missing_block",
+        "page_view",
+        "cta_click",
+        "oauth_started",
+        "oauth_start_failed",
+        "ingest_completed",
+        "ingest_failed",
+        "draft_generated",
+        "draft_generation_failed",
+        "persona_saved",
+        "theme_changed",
+        "classifier_feedback_submitted",
+        "classifier_priority_corrected",
+    }
+    event = (body.event or "").strip()
+    if event not in allowed_events:
+        raise HTTPException(status_code=400, detail="Unsupported telemetry event")
+
+    payload: dict[str, Any] = {
+        "event": event,
+        "recordedAt": _utc_now().isoformat(),
+    }
+    if body.occurredAt and body.occurredAt.strip():
+        payload["occurredAt"] = body.occurredAt.strip()
+    if body.properties and isinstance(body.properties, dict):
+        # Local-first and privacy-safe: reject large/raw payloads.
+        safe_props: dict[str, Any] = {}
+        for k, v in body.properties.items():
+            key = str(k).strip()[:64]
+            if not key:
+                continue
+            if isinstance(v, (str, int, float, bool)) or v is None:
+                if isinstance(v, str):
+                    safe_props[key] = v[:200]
+                else:
+                    safe_props[key] = v
+        if safe_props:
+            payload["properties"] = safe_props
+
+    _append_jsonl(TELEMETRY_PATH, payload)
+    return TelemetryIngestResponse(accepted=True)

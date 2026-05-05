@@ -1,0 +1,16 @@
+{
+  "name": "mailmind-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MailMind standalone desktop app",
+  "main": "main.js",
+  "scripts": {
+    "build:mail": "npm install --prefix ../apps/mail && npm run build --prefix ../apps/mail",
+    "dev": "electron .",
+    "dev:mail": "cross-env MAILMIND_MAIL_DEV=1 electron ."
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "electron": "^41.5.0"
+  }
+}

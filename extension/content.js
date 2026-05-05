@@ -7,7 +7,14 @@ const PERSONA_KEY = "mailmindPersona";
 const WELCOME_KEY = "mailmind_fab_welcome_dismissed";
 const STYLES_ID = "mailmind-injected-ui-styles";
 const DEFAULT_BTN = "✨ AI Draft";
-const LOADING_LBL = "Generating...";
+const LOADING_LBL = "Generating…";
+const TELEMETRY_ENDPOINT = `${API_BASE}/telemetry/events`;
+const FAB_STATUS_ID = "mailmind-fab-status";
+const TOAST_DURATIONS_MS = {
+  success: 2400,
+  info: 2800,
+  error: 4000,
+};
 
 const prefersReducedMotion = () => {
   try {
@@ -19,6 +26,41 @@ const prefersReducedMotion = () => {
 
 let draftFlowInProgress = false;
 let fabResizeHandler = null;
+let firstDraftLatencyReported = false;
+let statusResetTimer = null;
+
+function setFabStatus(state, text) {
+  const status = document.getElementById(FAB_STATUS_ID);
+  if (!status) return;
+  status.className = "mm-fab-status mm-fab-status--" + state;
+  status.textContent = text;
+}
+
+function scheduleFabStatusReset(ms) {
+  if (statusResetTimer != null) {
+    clearTimeout(statusResetTimer);
+    statusResetTimer = null;
+  }
+  statusResetTimer = setTimeout(() => {
+    setFabStatus("idle", "Ready");
+    statusResetTimer = null;
+  }, Math.max(0, Number(ms) || 0));
+}
+
+function sendTelemetryEvent(event, properties) {
+  const body = {
+    event,
+    occurredAt: new Date().toISOString(),
+    properties: properties || {},
+  };
+  fetch(TELEMETRY_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).catch(() => {
+    /* telemetry must never break UX */
+  });
+}
 
 function debounce(fn, delay) {
   let t;
@@ -275,6 +317,7 @@ function ensureInjectedStyles() {
       right: auto !important;
       bottom: calc(96px + env(safe-area-inset-bottom, 0px));
       z-index: 999990; position: fixed; transition: opacity 0.2s var(--mm-ease);
+      display: flex; align-items: center; gap: 8px;
     }
     #mailmind-compose-fab .mm-fab-btn {
       display: inline-flex; align-items: center; gap: 0; min-height: 40px; padding: 0 10px; border: none; cursor: pointer; border-radius: 999px;
@@ -293,7 +336,23 @@ function ensureInjectedStyles() {
     #mailmind-compose-fab .mm-fab-btn:focus-visible .mm-fab-label { max-width: 200px; opacity: 1; }
     .mm-fab--expanded .mm-fab-label { max-width: 200px; opacity: 1; }
     #mailmind-compose-fab .mm-fab-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-    @media (max-width: 520px) { #mailmind-compose-fab .mm-fab-label { max-width: 200px; opacity: 1; } }
+    #mailmind-compose-fab .mm-fab-status {
+      display: inline-flex; align-items: center; min-height: 30px; padding: 0 10px;
+      border-radius: 999px; font-size: 12px; font-weight: 600;
+      font-family: system-ui, -apple-system, Roboto, sans-serif;
+      border: 1px solid rgba(0,0,0,0.08);
+      background: rgba(255,255,255,0.9); color: #1f2937;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+    }
+    #mailmind-compose-fab .mm-fab-status--working { background: #111827; color: #f9fafb; border-color: rgba(255,255,255,0.12); }
+    #mailmind-compose-fab .mm-fab-status--success { background: #e8f5e9; color: #1b5e20; border-color: #b7dfba; }
+    #mailmind-compose-fab .mm-fab-status--error { background: #fdecea; color: #8a1c1c; border-color: #f6c2bd; }
+    #mailmind-compose-fab .mm-fab-status--idle { background: rgba(255,255,255,0.9); color: #1f2937; }
+    @media (max-width: 520px) {
+      #mailmind-compose-fab { left: max(8px, env(safe-area-inset-left, 0px)); gap: 6px; }
+      #mailmind-compose-fab .mm-fab-label { max-width: 200px; opacity: 1; }
+      #mailmind-compose-fab .mm-fab-status { min-height: 28px; font-size: 11px; padding: 0 8px; }
+    }
     @media (prefers-reduced-motion: reduce) {
       #mailmind-compose-fab .mm-fab-btn:hover { transform: none; }
     }
@@ -320,18 +379,21 @@ function getToastHost() {
     h.id = "mailmind-toast-host";
     h.setAttribute("role", "region");
     h.setAttribute("aria-label", "MailMind notifications");
+    h.setAttribute("aria-live", "polite");
+    h.setAttribute("aria-atomic", "false");
     (document.body || document.documentElement).appendChild(h);
   }
   return h;
 }
 
-function showToast({ title, message, variant = "info", duration = 5000 }) {
+function showToast({ title, message, variant = "info", duration }) {
   ensureInjectedStyles();
   const bodyText = (message && String(message)) || "";
   const titleText = (title && String(title)) || "";
+  const tone = ["success", "error", "info"].includes(variant) ? variant : "info";
   const t = document.createElement("div");
-  t.className = "mm-toast mm-toast--" + (variant || "info");
-  t.setAttribute("role", "status");
+  t.className = "mm-toast mm-toast--" + tone;
+  t.setAttribute("role", tone === "error" ? "alert" : "status");
   if (bodyText) {
     t.innerHTML =
       (titleText ? '<p class="mm-toast-title"></p>' : "") + '<p class="mm-toast-body"></p>';
@@ -346,7 +408,8 @@ function showToast({ title, message, variant = "info", duration = 5000 }) {
   }
   getToastHost().appendChild(t);
   requestAnimationFrame(() => t.classList.add("mm-toast-on"));
-  const d = Math.min(12000, Math.max(2500, duration));
+  const defaultDuration = TOAST_DURATIONS_MS[tone];
+  const d = Math.min(12000, Math.max(2000, duration == null ? defaultDuration : duration));
   setTimeout(() => {
     t.classList.remove("mm-toast-on");
     setTimeout(() => t.remove(), 280);
@@ -425,7 +488,13 @@ function injectComposeFab() {
   );
   btn.innerHTML =
     '<span class="mm-fab-icon" aria-hidden="true">✨</span><span class="mm-fab-label">AI Draft</span>';
+  const status = document.createElement("div");
+  status.id = FAB_STATUS_ID;
+  status.className = "mm-fab-status mm-fab-status--idle";
+  status.textContent = "Ready";
+  status.setAttribute("aria-live", "polite");
   fab.appendChild(btn);
+  fab.appendChild(status);
   (document.body || document.documentElement).appendChild(fab);
   positionComposeFab();
   if (!fabResizeHandler) {
@@ -450,6 +519,7 @@ function personaForApi(p) {
 
 function showIntentDialog() {
   return new Promise((resolve) => {
+    const activeBeforeOpen = document.activeElement;
     if (document.getElementById("mailmind-intent-overlay")) {
       showToast({ title: "Dialog open", message: "Finish or cancel the open prompt first.", variant: "info", duration: 3200 });
       resolve(null);
@@ -508,6 +578,22 @@ function showIntentDialog() {
         e.preventDefault();
         cleanup(null);
         document.removeEventListener("keydown", onKey, true);
+        return;
+      }
+      if (e.key === "Tab") {
+        const focusables = box.querySelectorAll(
+          'button:not([disabled]), [href], select:not([disabled]), textarea:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        if (!focusables.length) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     };
     document.addEventListener("keydown", onKey, true);
@@ -526,6 +612,13 @@ function showIntentDialog() {
     const cleanup = (v) => {
       document.removeEventListener("keydown", onKey, true);
       ov.remove();
+      if (activeBeforeOpen && activeBeforeOpen.focus) {
+        try {
+          activeBeforeOpen.focus();
+        } catch (e) {
+          /* */
+        }
+      }
       resolve(v);
     };
 
@@ -541,7 +634,7 @@ function showIntentDialog() {
       if (intent === "custom" && !String(extra).trim()) {
         showToast({
           title: "Add details",
-          message: "For Custom, add a short note in Extra notes, or change the response direction.",
+          message: "For Custom, add a short note in Extra notes or change response direction.",
           variant: "error",
           duration: 5500,
         });
@@ -587,6 +680,7 @@ function setMainButtonsLoading(loading) {
           "</span>";
       } else b.textContent = loading ? LOADING_LBL : DEFAULT_BTN;
     });
+  if (loading) setFabStatus("working", "Generating…");
 }
 
 function onDraftClick(btn) {
@@ -595,6 +689,8 @@ function onDraftClick(btn) {
     return;
   }
   draftFlowInProgress = true;
+  const flowStartedAtMs = Date.now();
+  sendTelemetryEvent("draft_invoked", { surface: "gmail_compose_fab" });
   (async () => {
     let abortTimer = null;
     const finishFlow = () => {
@@ -608,6 +704,9 @@ function onDraftClick(btn) {
     try {
       const compose0 = findComposeBox();
       if (!compose0) {
+        sendTelemetryEvent("draft_generated_error", { reason: "compose_missing_before_start" });
+        setFabStatus("error", "Open a reply first");
+        scheduleFabStatusReset(4200);
         showToast({
           title: "Reply not open",
           message: "Open Reply or a new message first, then use AI Draft.",
@@ -627,26 +726,34 @@ function onDraftClick(btn) {
         persona = null;
       }
       if (staleExtension) {
+        sendTelemetryEvent("draft_generated_error", { reason: "extension_context_invalidated" });
+        setFabStatus("error", "Refresh Gmail tab");
+        scheduleFabStatusReset(4200);
         showToast({
           title: "Extension reloaded",
-          message: "Refresh this Gmail page (F5 or ⌘R), then try AI Draft again.",
+          message: "Refresh Gmail to continue, then try AI Draft again.",
           variant: "error",
-          duration: 7000,
         });
         return;
       }
       if (!isPersonaConfigured(persona)) {
+        sendTelemetryEvent("persona_missing_block", { reason: "persona_not_configured" });
+        sendTelemetryEvent("draft_generated_error", { reason: "persona_not_configured" });
+        setFabStatus("error", "Persona required");
+        scheduleFabStatusReset(4200);
         showToast({
           title: "Set up your persona",
-          message: "Open the MailMind icon in the toolbar, add your name, and Save.",
-          variant: "info",
-          duration: 6500,
+          message: "Open MailMind settings, save your persona, then retry.",
+          variant: "error",
         });
         return;
       }
 
       const text = extractLatestEmailText();
       if (!text) {
+        sendTelemetryEvent("draft_generated_error", { reason: "email_context_missing" });
+        setFabStatus("error", "No email context");
+        scheduleFabStatusReset(4200);
         showToast({
           title: "No email text",
           message: "Open a conversation, then try again.",
@@ -657,6 +764,8 @@ function onDraftClick(btn) {
 
       const plan = await showIntentDialog();
       if (!plan) {
+        setFabStatus("idle", "Ready");
+        sendTelemetryEvent("draft_generated_error", { reason: "user_cancelled" });
         return;
       }
 
@@ -679,6 +788,9 @@ function onDraftClick(btn) {
         body: JSON.stringify(bodyPayload),
       });
       if (!r.ok) {
+        sendTelemetryEvent("draft_generated_error", { reason: "backend_request_failed", httpStatus: r.status });
+        setFabStatus("error", "Backend unavailable");
+        scheduleFabStatusReset(4200);
         showToast({
           title: "Request failed",
           message: "Check the server and your API key, then try again.",
@@ -689,11 +801,17 @@ function onDraftClick(btn) {
       const data = await r.json();
       const replyText = (data && data.reply) || "";
       if (typeof replyText !== "string" || !replyText.trim()) {
+        sendTelemetryEvent("draft_generated_error", { reason: "empty_reply" });
+        setFabStatus("error", "No draft returned");
+        scheduleFabStatusReset(4200);
         showToast({ title: "No reply", message: "The server did not return text.", variant: "error" });
         return;
       }
       const box = findComposeBox();
       if (!box) {
+        sendTelemetryEvent("draft_generated_error", { reason: "compose_closed_before_insert" });
+        setFabStatus("error", "Compose closed");
+        scheduleFabStatusReset(4200);
         showToast({
           title: "Compose closed",
           message: "The reply area closed. Open Reply again, then use AI Draft.",
@@ -702,16 +820,36 @@ function onDraftClick(btn) {
         return;
       }
       setComposeText(box, replyText.trim());
+      sendTelemetryEvent("draft_generated_success", {
+        intent: plan.intent || "auto",
+        responseLength: plan.responseLength || "medium",
+      });
+      const draftLatencyMs = Math.max(0, Date.now() - flowStartedAtMs);
+      setFabStatus("success", "Draft ready in " + (draftLatencyMs / 1000).toFixed(1) + "s");
+      scheduleFabStatusReset(3800);
+      if (!firstDraftLatencyReported) {
+        firstDraftLatencyReported = true;
+        sendTelemetryEvent("time_to_first_draft_ms", {
+          value: draftLatencyMs,
+        });
+      }
       showToast({ title: "Draft inserted", message: "Review and edit before sending.", variant: "success", duration: 4000 });
     } catch (e) {
-      if (e && e.name === "AbortError")
+      if (e && e.name === "AbortError") {
+        sendTelemetryEvent("draft_generated_error", { reason: "backend_timeout" });
+        setFabStatus("error", "Timed out");
+        scheduleFabStatusReset(4200);
         showToast({ title: "Timed out", message: "Try again in a moment.", variant: "error" });
-      else
+      } else {
+        sendTelemetryEvent("draft_generated_error", { reason: "unexpected_runtime_error" });
+        setFabStatus("error", "Try again");
+        scheduleFabStatusReset(4200);
         showToast({
           title: "Something went wrong",
           message: "Is the backend running on port 8000?",
           variant: "error",
         });
+      }
     } finally {
       finishFlow();
     }

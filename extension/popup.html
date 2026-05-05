@@ -5,243 +5,930 @@
     <meta name="color-scheme" content="dark" />
     <title>MailMind</title>
     <style>
-      * {
+      *,
+      *::before,
+      *::after {
         box-sizing: border-box;
+        margin: 0;
+        padding: 0;
       }
+
       :root {
-        --mm-bg0: #0b0c10;
-        --mm-bg1: #12141c;
-        --mm-border: rgba(255, 255, 255, 0.1);
-        --mm-muted: #9aa0a6;
-        --mm-fg: #e8eaed;
-        --mm-primary: #3b82f6;
-        --mm-primary-b: #1d4ed8;
-        --mm-ok: #3dd68c;
-        --mm-err: #f28b82;
-        --r: 16px;
-        --r-outer: 28px;
-        --mm-frame: #0c0e14; /* Slightly different from the card: shows the arc in corners */
+        /* Frame = gutter outside the rounded card (host window reads “rounded” vs flat fill) */
+        --frame: #08090c;
+        --card-top: #141822;
+        --card-mid: #0f1118;
+        --card-bot: #0a0c10;
+        --s1: #12141c;
+        --s2: #1a1d2a;
+        --b1: rgba(255, 255, 255, 0.07);
+        --b2: rgba(255, 255, 255, 0.12);
+        --b3: rgba(255, 255, 255, 0.2);
+        --accent: #3b82f6;
+        --accent-soft: rgba(59, 130, 246, 0.14);
+        --ring: rgba(59, 130, 246, 0.45);
+        --t1: #f4f4f5;
+        --t2: #b4b4bd;
+        --t3: #71717a;
+        --ok: #4ade80;
+        --err: #f87171;
+        --r-card: 20px;
+        --r-field: 12px;
+        --r-pill: 9999px;
+        --mono: ui-monospace, "Cascadia Code", "SFMono-Regular", Menlo, Consolas, monospace;
+        --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+        --elevation: 0 12px 40px rgba(0, 0, 0, 0.45);
       }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+
       /*
-        Extension popups are a square host window. To read as “rounded”, the card
-        (mm-shell) must contrast with the margin (frame). Same-color full bleed = looks square.
-        Do not use 100vh / 100vw here (breaks in Chrome).
+        Never use vw/vh on extension action popups: Chrome ties them to the *browser tab*,
+        not the popup, so 100vw can be ~0 or huge and collapses the UI to a vertical strip.
+        Use a fixed pixel width on html + body so the host sizes the popup correctly.
       */
       html {
-        background: var(--mm-frame);
-        margin: 0;
+        background: var(--frame);
         overflow: hidden;
-      }
-      body {
-        box-sizing: border-box;
+        /* Total popup width; do not use vw. */
         width: 400px;
-        min-width: 360px;
-        max-width: 100%;
-        margin: 0;
-        min-height: 0;
-        padding: 10px 12px 12px 12px;
-        background: var(--mm-frame);
-        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-        font-size: 14px;
-        line-height: 1.45;
-        color: var(--mm-fg);
-        overflow: hidden;
-        -webkit-font-smoothing: antialiased;
+        min-width: 400px;
       }
-      .mm-shell {
-        position: relative;
-        z-index: 0;
-        width: 100%;
-        min-width: 280px;
-        max-height: 560px;
+
+      body {
+        width: 400px;
+        min-width: 400px;
         margin: 0;
+        padding: 10px;
         box-sizing: border-box;
-        -webkit-border-radius: var(--r-outer);
-        border-radius: var(--r-outer);
-        /* Visible rounded outline (single flat fill reads as a square). */
-        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: var(--frame);
+        font-family: var(--sans);
+        font-size: 13px;
+        line-height: 1.55;
+        color: var(--t1);
+        -webkit-font-smoothing: antialiased;
         overflow: hidden;
+      }
+
+      .wrap {
+        position: relative;
+        width: 100%;
+        min-width: 100%;
+        min-height: 0;
+        max-height: 580px;
         overflow-y: auto;
         overflow-x: hidden;
-        -webkit-overflow-scrolling: touch;
-        background: linear-gradient(165deg, #1a2332 0%, #12141f 32%, #0a0c12 100%);
-        background-clip: padding-box;
-        box-shadow:
-          0 0 0 0.5px rgba(0, 0, 0, 0.35),
-          0 0 0 1px rgba(0, 0, 0, 0.25) inset,
-          0 20px 48px -12px rgba(0, 0, 0, 0.55);
-        /* Promotes correct anti-aliasing on the rounded rect in some Chromium builds */
-        transform: translateZ(0);
-        backface-visibility: hidden;
+        scroll-behavior: smooth;
+        border-radius: var(--r-card);
+        -webkit-border-radius: var(--r-card);
+        background: linear-gradient(160deg, var(--card-top) 0%, var(--card-mid) 40%, var(--card-bot) 100%);
+        border: 1px solid var(--b2);
+        box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.4), var(--elevation);
         isolation: isolate;
+        scrollbar-width: thin;
+        scrollbar-color: var(--b2) transparent;
       }
-      .mm-hero {
-        padding: 18px 20px 14px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-        background: linear-gradient(90deg, rgba(59, 130, 246, 0.12) 0%, transparent 60%);
+      .wrap::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        pointer-events: none;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        z-index: 0;
       }
-      .mm-brand {
+      .wrap > * {
+        position: relative;
+        z-index: 1;
+      }
+      .wrap::-webkit-scrollbar {
+        width: 7px;
+      }
+      .wrap::-webkit-scrollbar-track {
+        margin: 10px 0;
+        background: transparent;
+      }
+      .wrap::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.12);
+        border-radius: 10px;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .wrap {
+          scroll-behavior: auto;
+        }
+      }
+
+      .hd {
+        padding: 20px 20px 16px;
+        border-bottom: 1px solid var(--b1);
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .hd-text {
+        min-width: 0;
+        flex: 1;
+      }
+      .wordmark {
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: -0.04em;
+        color: var(--t1);
+        margin: 0 0 4px 0;
+        line-height: 1.15;
+      }
+      .hd-hint {
+        font-size: 11px;
+        line-height: 1.4;
+        color: var(--t3);
+        font-weight: 400;
+        max-width: 20em;
+        margin: 0;
+        letter-spacing: 0.01em;
+      }
+      .status-badge {
         display: flex;
         align-items: center;
-        gap: 10px;
-        margin: 0 0 4px 0;
+        gap: 5px;
+        padding: 4px 9px 4px 7px;
+        border: 1px solid var(--b2);
+        border-radius: var(--r-pill);
+        font-family: var(--mono);
+        font-size: 9.5px;
+        color: var(--t2);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        flex-shrink: 0;
+        background: rgba(0, 0, 0, 0.2);
       }
-      .mm-emoji {
-        font-size: 22px;
+      .live-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: var(--ok);
+        flex-shrink: 0;
+        animation: blink 3s ease-in-out infinite;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .live-dot {
+          animation: none;
+        }
+      }
+      @keyframes blink {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        60% {
+          opacity: 0.25;
+        }
+      }
+
+      .acct {
+        padding: 12px 20px;
+        border-bottom: 1px solid var(--b1);
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+      .acct-pill {
+        padding: 6px 12px;
+        border-radius: var(--r-pill);
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--t3);
+        background: rgba(0, 0, 0, 0.15);
+        border: 1px solid var(--b1);
+        cursor: pointer;
+        transition: color 0.14s, border-color 0.14s, background 0.14s, box-shadow 0.14s;
+        font-family: var(--sans);
+        letter-spacing: -0.02em;
         line-height: 1;
       }
-      h1 {
-        font-size: 17px;
-        font-weight: 650;
-        margin: 0;
-        letter-spacing: -0.02em;
+      .acct-pill:hover {
+        color: var(--t2);
+        border-color: var(--b2);
+        background: rgba(255, 255, 255, 0.04);
       }
-      .mm-lead {
-        margin: 0;
-        font-size: 12.5px;
-        color: var(--mm-muted);
+      .acct-pill.on {
+        color: var(--t1);
+        background: var(--accent-soft);
+        border-color: rgba(59, 130, 246, 0.32);
+        box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.1);
+      }
+      .acct-pill:focus {
+        outline: none;
+      }
+      .acct-pill:focus-visible {
+        box-shadow: 0 0 0 2px var(--card-mid), 0 0 0 4px var(--ring);
+      }
+      .acct-add {
+        margin-left: auto;
+        padding: 5px 10px;
+        border-radius: var(--r-pill);
+        font-size: 11px;
+        color: var(--t3);
+        background: transparent;
+        border: 1px dashed var(--b2);
+        cursor: pointer;
+        font-family: var(--sans);
+        transition: color 0.12s, border-color 0.12s, background 0.12s;
+      }
+      .acct-add:hover {
+        color: var(--t2);
+        border-color: var(--b3);
+      }
+      .acct-add:focus-visible {
+        outline: 2px solid var(--ring);
+        outline-offset: 2px;
+      }
+
+      .kbr {
+        padding: 10px 20px 12px;
+        border-bottom: 1px solid var(--b1);
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 5px;
+        font-size: 11px;
+        color: var(--t3);
         line-height: 1.5;
       }
-      .mm-tips {
-        margin: 0;
-        padding: 10px 20px 0;
-        font-size: 11.5px;
-        color: var(--mm-muted);
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 6px;
-      }
       kbd {
-        display: inline-block;
-        font: 10.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        color: #c4c7c5;
+        font-family: var(--mono);
+        font-size: 9.5px;
+        padding: 3px 6px;
         background: rgba(0, 0, 0, 0.35);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 4px;
-        padding: 2px 5px;
+        border: 1px solid var(--b2);
+        border-radius: 6px;
+        color: var(--t2);
       }
-      .mm-form {
-        padding: 14px 20px 18px;
+      .kbr-sep {
+        opacity: 0.3;
+        margin: 0 1px;
+        user-select: none;
+      }
+      .kbr a {
+        margin-left: auto;
+        font-size: 11px;
+        color: var(--t3);
+        text-decoration: none;
+        transition: color 0.12s;
+        border-radius: 4px;
+        padding: 2px 4px;
+      }
+      .kbr a:hover {
+        color: var(--t2);
+      }
+      .kbr a:focus-visible {
+        outline: 2px solid var(--ring);
+        outline-offset: 2px;
+      }
+
+      .fm {
+        padding: 16px 20px 14px;
         display: flex;
         flex-direction: column;
         gap: 2px;
       }
-      label {
+      .r2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px 12px;
+        margin-bottom: 12px;
+      }
+      .r2 + .r2 {
+        margin-bottom: 0;
+      }
+      .fm .r2:nth-of-type(2) {
+        margin-bottom: 14px;
+      }
+      .lbl {
         display: block;
-        margin-top: 10px;
-        font-size: 11.5px;
-        font-weight: 600;
-        text-transform: uppercase;
+        font-family: var(--sans);
+        font-size: 11px;
+        font-weight: 500;
         letter-spacing: 0.04em;
-        color: #b8bdbe;
+        text-transform: none;
+        color: var(--t2);
+        margin-bottom: 6px;
       }
-      label:first-of-type {
-        margin-top: 0;
+      .lbl-opt {
+        font-family: var(--sans);
+        font-size: 10px;
+        letter-spacing: 0;
+        text-transform: none;
+        font-weight: 400;
+        color: var(--t3);
+        opacity: 0.65;
       }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
       input,
-      textarea,
-      select {
+      textarea {
         width: 100%;
-        margin-top: 4px;
-        padding: 9px 10px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: var(--r);
-        font: inherit;
-        color: var(--mm-fg);
-        background: rgba(0, 0, 0, 0.3);
+        min-height: 40px;
+        padding: 9px 12px;
+        background: rgba(0, 0, 0, 0.28);
+        border: 1px solid var(--b1);
+        border-radius: var(--r-field);
+        font-family: var(--sans);
+        font-size: 13px;
+        font-weight: 400;
+        color: var(--t1);
         outline: none;
+        transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+        -webkit-appearance: none;
+        appearance: none;
+        caret-color: #93c5fd;
+      }
+      input::placeholder,
+      textarea::placeholder {
+        color: var(--t3);
+        font-weight: 400;
+        opacity: 0.85;
+      }
+      input:hover,
+      textarea:hover {
+        border-color: rgba(255, 255, 255, 0.14);
+        background: rgba(0, 0, 0, 0.22);
       }
       input:focus,
-      textarea:focus,
-      select:focus {
-        border-color: rgba(138, 180, 248, 0.5);
-        box-shadow: 0 0 0 3px rgba(66, 133, 244, 0.2);
+      textarea:focus {
+        outline: none;
+      }
+      input:focus-visible,
+      textarea:focus-visible {
+        border-color: rgba(59, 130, 246, 0.45);
+        background: rgba(0, 0, 0, 0.2);
+        box-shadow: 0 0 0 2px var(--card-mid), 0 0 0 4px var(--ring);
       }
       textarea {
-        min-height: 48px;
         resize: vertical;
+        min-height: 78px;
+        max-height: 200px;
+        line-height: 1.6;
+        padding-top: 10px;
+        padding-bottom: 10px;
       }
-      button#save {
-        width: 100%;
-        margin-top: 16px;
-        padding: 11px 12px;
-        font-weight: 600;
-        font-size: 14px;
-        color: #fff;
-        background: linear-gradient(180deg, var(--mm-primary) 0%, var(--mm-primary-b) 100%);
-        border: none;
-        border-radius: 999px;
-        cursor: pointer;
-        box-shadow: 0 6px 20px rgba(29, 78, 216, 0.3);
+
+      .tn {
+        margin: 0 0 16px 0;
       }
-      button#save:hover {
-        filter: brightness(1.06);
+      .tn + div {
+        margin-top: 2px;
       }
-      #status {
-        margin-top: 10px;
-        min-height: 20px;
-        font-size: 12.5px;
+      .tn .lbl {
+        margin-bottom: 7px;
+      }
+      .tn-row {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .tn-btn {
+        padding: 6px 12px;
+        border-radius: var(--r-pill);
+        font-family: var(--sans);
+        font-size: 12px;
         font-weight: 500;
-        color: var(--mm-ok);
+        color: var(--t2);
+        background: rgba(0, 0, 0, 0.2);
+        border: 1px solid var(--b1);
+        cursor: pointer;
+        transition: color 0.12s, border-color 0.12s, background 0.12s, box-shadow 0.12s;
+        white-space: nowrap;
+        letter-spacing: -0.02em;
       }
-      .mm-footer {
+      .tn-btn:hover {
+        color: var(--t1);
+        border-color: var(--b2);
+        background: rgba(255, 255, 255, 0.05);
+      }
+      .tn-btn[aria-pressed="true"] {
+        color: #fff;
+        background: var(--accent-soft);
+        border-color: rgba(59, 130, 246, 0.45);
+        box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.15);
+      }
+      .tn-btn:focus {
+        outline: none;
+      }
+      .tn-btn:focus-visible {
+        box-shadow: 0 0 0 2px var(--card-mid), 0 0 0 4px var(--ring);
+      }
+      .tn-btn[aria-pressed="true"]:focus-visible {
+        box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.25), 0 0 0 3px var(--card-mid), 0 0 0 5px var(--ring);
+      }
+
+      .bw {
         padding: 0 20px 16px;
+      }
+      .bw-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .btn {
+        width: 100%;
+        min-height: 44px;
+        padding: 11px 16px;
+        background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
+        border: 1px solid rgba(255, 255, 255, 0.35);
+        border-radius: var(--r-pill);
+        font-family: var(--sans);
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        color: #0c1222;
+        cursor: pointer;
+        box-shadow: 0 1px 0 rgba(255, 255, 255, 0.45) inset, 0 4px 12px rgba(0, 0, 0, 0.25);
+        transition: filter 0.12s, transform 0.1s, box-shadow 0.12s;
+      }
+      .btn:hover {
+        filter: brightness(1.04);
+        box-shadow: 0 1px 0 rgba(255, 255, 255, 0.5) inset, 0 6px 16px rgba(0, 0, 0, 0.28);
+      }
+      .btn:active {
+        transform: scale(0.985);
+        box-shadow: 0 1px 0 rgba(255, 255, 255, 0.35) inset, 0 2px 6px rgba(0, 0, 0, 0.2);
+      }
+      .btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+        transform: none;
+        filter: none;
+      }
+      .btn:focus {
+        outline: none;
+      }
+      .btn:focus-visible {
+        box-shadow: 0 0 0 2px var(--card-mid), 0 0 0 4px var(--ring), 0 1px 0 rgba(255, 255, 255, 0.45) inset, 0 4px 12px rgba(0, 0, 0, 0.2);
+      }
+      .btn.btn-sub {
+        min-height: 38px;
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--t1);
+        border: 1px solid var(--b2);
+        box-shadow: none;
+      }
+      .btn.btn-sub:hover {
+        background: rgba(255, 255, 255, 0.08);
+        filter: none;
+        box-shadow: none;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .btn:active {
+          transform: none;
+        }
+      }
+
+      .msg {
+        min-height: 18px;
+        margin-top: 8px;
         font-size: 11px;
-        color: var(--mm-muted);
-        line-height: 1.4;
-        border-top: 1px solid rgba(255, 255, 255, 0.05);
-        margin-top: 0;
-        padding-top: 12px;
-        padding-bottom: 16px;
+        font-family: var(--mono);
+        text-align: center;
+        color: var(--ok);
+        opacity: 0;
+        transform: translateY(3px);
+        transition: opacity 0.16s, transform 0.16s, color 0.12s;
+      }
+      .msg.show {
+        opacity: 1;
+        transform: none;
+      }
+      .msg.err {
+        color: var(--err);
+      }
+      .msg.hint {
+        color: var(--t2);
+      }
+
+      .ft {
+        padding: 12px 20px 16px;
+        border-top: 1px solid var(--b1);
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        align-items: center;
+        gap: 8px;
+      }
+      .ft-l {
+        font-size: 10.5px;
+        color: var(--t3);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        text-align: center;
+        line-height: 1.45;
+        max-width: 100%;
+        opacity: 0.9;
+      }
+      .ft-l svg {
+        flex-shrink: 0;
+        opacity: 0.45;
+      }
+
+      @keyframes up {
+        from {
+          opacity: 0;
+          transform: translateY(4px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        .hd {
+          animation: up 0.16s ease both;
+        }
+        .acct {
+          animation: up 0.16s 0.03s ease both;
+        }
+        .kbr {
+          animation: up 0.16s 0.05s ease both;
+        }
+        .fm {
+          animation: up 0.16s 0.07s ease both;
+        }
+        .bw {
+          animation: up 0.16s 0.09s ease both;
+        }
+        .ft {
+          animation: up 0.16s 0.11s ease both;
+        }
       }
     </style>
   </head>
   <body>
-    <div class="mm-shell">
-      <div class="mm-hero">
-        <div class="mm-brand">
-          <span class="mm-emoji" aria-hidden="true">✨</span>
-          <h1>Persona &amp; style</h1>
+    <main class="wrap" id="main" role="main" aria-labelledby="app-title">
+      <header class="hd">
+        <div class="hd-text">
+          <h1 class="wordmark" id="app-title">MailMind</h1>
+          <p class="hd-hint">Your voice for AI drafts in Gmail</p>
         </div>
-        <p class="mm-lead">
-          Personalizes every generated reply. In Gmail, use the floating control or the options below, then
-          <strong>Generate</strong> in the mail dialog.
-        </p>
+        <div class="status-badge" title="Local persona in browser storage">
+          <span class="live-dot" aria-hidden="true"></span>
+          <span>ready</span>
+        </div>
+      </header>
+
+      <div class="acct" role="group" aria-label="Account profile">
+        <button type="button" class="acct-pill on" data-a="personal" id="pill-personal" aria-pressed="true">
+          Personal
+        </button>
+        <button type="button" class="acct-pill" data-a="work" id="pill-work" aria-pressed="false">Work</button>
+        <button type="button" class="acct-add" id="add-acct" title="Coming soon">+ Add</button>
       </div>
-      <p class="mm-tips" aria-label="Gmail keyboard shortcuts for MailMind">
-        In Gmail: <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>.</kbd> (Windows) ·
-        <kbd>⌘</kbd><kbd>Shift</kbd><kbd>.</kbd> (Mac). Remap under
-        <a href="#" id="ext-shortcuts" style="color: #8ab4f8">Extension shortcuts</a>.
-      </p>
-      <form class="mm-form" novalidate>
-        <label>Full name <input id="fullName" type="text" autocomplete="name" required /></label>
-        <label>Position <input id="position" type="text" /></label>
-        <label>Business name <input id="businessName" type="text" /></label>
-        <label>Contact info <textarea id="contactInfo" rows="2" placeholder="Phone, email, etc."></textarea></label>
-        <label>
-          Tone
-          <select id="tone">
-            <option value="professional">Professional</option>
-            <option value="friendly">Friendly</option>
-            <option value="formal">Formal</option>
-            <option value="concise">Concise</option>
-            <option value="warm">Warm</option>
-          </select>
-        </label>
-        <label>
-          Instructions (optional)
+
+      <div class="kbr" aria-label="Gmail keyboard shortcuts">
+        <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>.</kbd>
+        <span class="kbr-sep" aria-hidden="true">·</span>
+        <kbd>⌘</kbd><kbd>Shift</kbd><kbd>.</kbd>
+        <a href="#" id="remap" aria-label="Open extension keyboard shortcuts in Chrome">Remap</a>
+      </div>
+
+      <form class="fm" id="persona-form" autocomplete="on" novalidate>
+        <div class="r2">
+          <div>
+            <label class="lbl" for="fullName">Name</label>
+            <input
+              id="fullName"
+              name="name"
+              type="text"
+              placeholder="Full name"
+              autocomplete="name"
+              required
+              inputmode="text"
+            />
+          </div>
+          <div>
+            <label class="lbl" for="position">Position</label>
+            <input id="position" name="jobTitle" type="text" placeholder="Role" autocomplete="organization-title" />
+          </div>
+        </div>
+        <div class="r2">
+          <div>
+            <label class="lbl" for="businessName">Business</label>
+            <input id="businessName" name="organization" type="text" placeholder="Company" autocomplete="organization" />
+          </div>
+          <div>
+            <label class="lbl" for="contactInfo">Contact</label>
+            <input
+              id="contactInfo"
+              name="email"
+              type="text"
+              placeholder="Phone or email"
+              autocomplete="email tel"
+            />
+          </div>
+        </div>
+
+        <div class="tn" role="group" aria-labelledby="tone-legend">
+          <div class="lbl" id="tone-legend">Tone</div>
+          <div class="tn-row" role="toolbar" aria-label="Tone for drafts">
+            <button type="button" class="tn-btn" data-t="professional" id="tone-prof" aria-pressed="true">
+              Professional
+            </button>
+            <button type="button" class="tn-btn" data-t="friendly" id="tone-friendly" aria-pressed="false">Friendly</button>
+            <button type="button" class="tn-btn" data-t="formal" id="tone-formal" aria-pressed="false">Formal</button>
+            <button type="button" class="tn-btn" data-t="concise" id="tone-concise" aria-pressed="false">Concise</button>
+            <button type="button" class="tn-btn" data-t="warm" id="tone-warm" aria-pressed="false">Warm</button>
+          </div>
+        </div>
+        <span class="sr-only" aria-live="polite" id="tone-sr" aria-atomic="true"></span>
+
+        <div>
+          <label class="lbl" for="instructions">Instructions <span class="lbl-opt">(optional)</span></label>
           <textarea
             id="instructions"
+            name="instructions"
             rows="3"
-            placeholder="Default phrasing, length, or things to always avoid in drafts"
+            placeholder="Phrasing preferences, sign-off style, things to avoid…"
           ></textarea>
-        </label>
-        <button type="button" id="save">Save</button>
-        <p id="status" aria-live="polite" role="status"></p>
+        </div>
       </form>
-      <p class="mm-footer">MailMind never sends your settings off this device—only the Gmail page talks to your local server when you generate.</p>
-    </div>
-    <script src="popup.js"></script>
+
+      <div class="bw">
+        <button class="btn" id="save" type="button">Save persona</button>
+        <div class="bw-row">
+          <select class="in" id="provider-select" style="max-width: 130px">
+            <option value="gmail" selected>Gmail</option>
+            <option value="outlook">Outlook</option>
+          </select>
+          <button class="btn btn-sub" id="gmail-connect" type="button">Connect Gmail</button>
+          <button class="btn btn-sub" id="gmail-ingest" type="button">Ingest Inbox</button>
+        </div>
+        <div class="msg" id="msg" role="status" aria-live="polite"></div>
+      </div>
+
+      <footer class="ft">
+        <span class="ft-l">
+          <svg width="10" height="11" viewBox="0 0 10 11" fill="none" aria-hidden="true">
+            <rect x="1.5" y="4.5" width="7" height="6" rx="1" stroke="currentColor" stroke-width="1.1" />
+            <path d="M3 4.5V3a2 2 0 0 1 4 0v1.5" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
+          </svg>
+          Persona stays in browser storage
+        </span>
+      </footer>
+    </main>
+    <script>
+      (function () {
+        const KEY = "mailmindPersona";
+        const API_BASE = "http://127.0.0.1:8000";
+        let provider = "gmail";
+        function providerLabel() {
+          return provider === "outlook" ? "Outlook" : "Gmail";
+        }
+        function providerPath(suffix) {
+          return "/" + provider + suffix;
+        }
+
+        function getTone() {
+          const b = document.querySelector('.tn-btn[aria-pressed="true"]');
+          return (b && b.getAttribute("data-t")) || "professional";
+        }
+
+        function setToneInUi(t) {
+          document.querySelectorAll(".tn-btn").forEach((btn) => {
+            const on = btn.getAttribute("data-t") === t;
+            btn.setAttribute("aria-pressed", on);
+            if (on) {
+              const label = (btn.textContent || "").trim();
+              document.getElementById("tone-sr").textContent = "Tone: " + label;
+            }
+          });
+        }
+
+        function getPersonaObject() {
+          return {
+            fullName: (document.getElementById("fullName").value || "").trim(),
+            position: (document.getElementById("position").value || "").trim(),
+            businessName: (document.getElementById("businessName").value || "").trim(),
+            contactInfo: (document.getElementById("contactInfo").value || "").trim(),
+            tone: getTone(),
+            instructions: (document.getElementById("instructions").value || "").trim(),
+            account: document.querySelector('.acct-pill[aria-pressed="true"]')?.getAttribute("data-a") || "personal",
+          };
+        }
+
+        function showMsg(text, isErr, kind) {
+          const el = document.getElementById("msg");
+          el.textContent = text;
+          let cls = "msg show";
+          if (isErr) cls += " err";
+          else if (kind === "hint") cls += " hint";
+          el.className = cls;
+          window.clearTimeout(showMsg._t);
+          showMsg._t = setTimeout(
+            function () {
+              el.className = "msg";
+              el.textContent = "";
+            },
+            isErr ? 5000 : 2500
+          );
+        }
+
+        async function api(path, init) {
+          const res = await fetch(API_BASE + path, init);
+          if (!res.ok) {
+            let detail = "Request failed";
+            try {
+              const json = await res.json();
+              detail = (json && json.detail) || detail;
+            } catch (e) {
+              /* */
+            }
+            throw new Error(detail);
+          }
+          return res.json();
+        }
+
+        async function refreshGmailStatus() {
+          const badge = document.querySelector(".status-badge span:last-child");
+          try {
+            const status = await api(providerPath("/oauth/status"));
+            if (status && status.connected) {
+              badge.textContent = provider + " linked";
+            } else {
+              badge.textContent = provider + " offline";
+            }
+          } catch (e) {
+            badge.textContent = "backend?";
+          }
+        }
+
+        function migrateLegacy(p) {
+          if (!p || typeof p !== "object") return p;
+          const m = { ...p };
+          if (m.bizName && !m.businessName) m.businessName = m.bizName;
+          if (m.contact && !m.contactInfo) m.contactInfo = m.contact;
+          if (m.instr && !m.instructions) m.instructions = m.instr;
+          return m;
+        }
+
+        document.querySelectorAll(".tn-btn").forEach((b) => {
+          b.addEventListener("click", function () {
+            const t = b.getAttribute("data-t");
+            if (t) setToneInUi(t);
+          });
+        });
+        (function setInitialToneSr() {
+          const t = document.querySelector('.tn-btn[aria-pressed="true"]');
+          if (t) document.getElementById("tone-sr").textContent = "Tone: " + t.textContent.trim();
+        })();
+
+        document.querySelectorAll(".acct-pill").forEach((b) => {
+          b.setAttribute("aria-pressed", b.classList.contains("on") ? "true" : "false");
+          b.addEventListener("click", function () {
+            if (b.id === "pill-work" || b.id === "pill-personal") {
+              document.querySelectorAll(".acct-pill").forEach((x) => {
+                x.classList.remove("on");
+                x.setAttribute("aria-pressed", "false");
+              });
+              b.classList.add("on");
+              b.setAttribute("aria-pressed", "true");
+            }
+          });
+        });
+
+        document.getElementById("add-acct").addEventListener("click", function (e) {
+          e.preventDefault();
+          showMsg("Multiple profiles coming later.", true);
+        });
+
+        document.getElementById("remap").addEventListener("click", function (e) {
+          e.preventDefault();
+          if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.create) {
+            chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
+          }
+        });
+
+        document.getElementById("save").addEventListener("click", function () {
+          const p = getPersonaObject();
+          if (!p.fullName) {
+            showMsg("Add your full name to save.", true);
+            document.getElementById("fullName").focus();
+            return;
+          }
+          const btn = document.getElementById("save");
+          btn.disabled = true;
+          btn.textContent = "Saving…";
+          if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) {
+            showMsg("Storage unavailable in this view.", true);
+            btn.disabled = false;
+            btn.textContent = "Save persona";
+            return;
+          }
+          chrome.storage.local.set({ [KEY]: p }, function () {
+            btn.disabled = false;
+            btn.textContent = "Save persona";
+            if (chrome.runtime && chrome.runtime.lastError) {
+              showMsg("Could not save. Try again.", true);
+              return;
+            }
+            showMsg("Saved", false);
+          });
+        });
+
+        document.getElementById("gmail-connect").addEventListener("click", async function () {
+          const btn = document.getElementById("gmail-connect");
+          btn.disabled = true;
+          btn.textContent = "Opening…";
+          try {
+            const out = await api(providerPath("/oauth/start"));
+            if (!out || !out.authUrl) throw new Error("OAuth URL missing");
+            if (typeof chrome !== "undefined" && chrome.tabs && chrome.tabs.create) {
+              chrome.tabs.create({ url: out.authUrl });
+              showMsg("OAuth tab opened. Approve access, then return here.", false, "hint");
+            } else {
+              window.open(out.authUrl, "_blank", "noopener");
+              showMsg("OAuth opened in new tab.", false, "hint");
+            }
+          } catch (e) {
+            showMsg(e && e.message ? e.message : "Could not start OAuth.", true);
+          } finally {
+            btn.disabled = false;
+            btn.textContent = "Connect " + providerLabel();
+            refreshGmailStatus();
+          }
+        });
+
+        document.getElementById("gmail-ingest").addEventListener("click", async function () {
+          const btn = document.getElementById("gmail-ingest");
+          btn.disabled = true;
+          btn.textContent = "Ingesting…";
+          try {
+            const out = await api(providerPath("/ingest/messages"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ maxResults: 10 }),
+            });
+            const count = (out && out.count) || 0;
+            showMsg("Ingest complete: " + count + " messages.", false, "hint");
+            refreshGmailStatus();
+          } catch (e) {
+            showMsg(e && e.message ? e.message : "Ingest failed.", true);
+          } finally {
+            btn.disabled = false;
+            btn.textContent = "Ingest Inbox";
+          }
+        });
+
+        document.getElementById("provider-select").addEventListener("change", function () {
+          provider = (this.value || "gmail").toLowerCase() === "outlook" ? "outlook" : "gmail";
+          document.getElementById("gmail-connect").textContent = "Connect " + providerLabel();
+          refreshGmailStatus();
+        });
+
+        if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+          chrome.storage.local.get([KEY], function (r) {
+            const err = chrome.runtime && chrome.runtime.lastError;
+            if (err) return;
+            const d = migrateLegacy(r[KEY]);
+            if (!d) return;
+            if (d.fullName) document.getElementById("fullName").value = d.fullName;
+            if (d.position != null) document.getElementById("position").value = d.position;
+            if (d.businessName != null) document.getElementById("businessName").value = d.businessName;
+            if (d.contactInfo != null) document.getElementById("contactInfo").value = d.contactInfo;
+            if (d.instructions != null) document.getElementById("instructions").value = d.instructions;
+            if (d.tone) setToneInUi(d.tone);
+            if (d.account) {
+              document.querySelectorAll(".acct-pill").forEach((b) => {
+                const on = b.getAttribute("data-a") === d.account;
+                b.classList.toggle("on", on);
+                b.setAttribute("aria-pressed", on ? "true" : "false");
+              });
+            }
+          });
+        }
+        refreshGmailStatus();
+      })();
+    </script>
   </body>
 </html>
